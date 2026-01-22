@@ -12,6 +12,7 @@
 #include "../tetris/tetris.h"
 #include "../timer/timer.h"
 #include "../GLCD/GLCD.h"
+#include "../adc/adc.h"
 
 /******************************************************************************
 ** Function name:		RIT_IRQHandler
@@ -30,6 +31,11 @@ extern GameState state;
 extern Tetromino currentTetromino;
 extern volatile uint8_t firstSpawn;
 extern volatile uint16_t high_score;
+extern volatile uint8_t slow_mode;
+
+extern volatile float speed_factor;
+
+extern void music_update(void);
 
 void RIT_IRQHandler (void)
 {					
@@ -55,43 +61,40 @@ void RIT_IRQHandler (void)
 				J_up=0;
 		}
 		
+		// 
+		float current_freq;
+        
+		if (slow_mode) {
+				current_freq = 1.0f; // 1 blocco/sec
+		} else {
+				current_freq = speed_factor; // speed_factor è calcolato in IRQ_adc
+		}
+		
+		uint32_t current_game_speed = (uint32_t)(STANDARD_GAME_SPEED / current_freq);
+
+		
 		if((LPC_GPIO1->FIOPIN & (1<<26)) == 0){	
-			/* Joytick DOWN pressed */
-			J_down++;
-			switch(J_down){
-				case 1:
-					//soft drop
-					disable_timer(0);
-					reset_timer(0);
-					init_timer(0, STANDARD_GAME_SPEED >> 1);
-					enable_timer(0);
-					// dimezziamo valore del MR per avere una velocità di caduta 2 block/sec
-					//LPC_TIM0 -> MR0 = STANDARD_GAME_SPEED >> 1;
-					break;
-				
-				default:
-					break;
-			}
+      /* Joystick DOWN pressed */
+			current_game_speed = current_game_speed >> 1; 
 		}
-		else{
-			if (J_down != 0){
-				J_down=0;
-				disable_timer(0);
-				//reset_timer(0);
-				init_timer(0, STANDARD_GAME_SPEED);
-				enable_timer(0);
-				//LPC_TIM0 -> MR0 = STANDARD_GAME_SPEED;
-			}
+
+		LPC_TIM0->MR0 = current_game_speed;
+       
+		if(LPC_TIM0->TC >= current_game_speed){
+			reset_timer(0);
+			enable_timer(0);
 		}
+		
+		ADC_start_conversion();
 		
 		if((LPC_GPIO1->FIOPIN & (1<<27)) == 0){	
 			/* Joytick LEFT pressed */
 			J_left++;
 			switch(J_left){
 				case 1:
-					disable_timer(0);
+					// disable_timer(0);
 					moveLeft();
-					enable_timer(0);
+					// enable_timer(0);
 					break;
 				default:
 					break;
@@ -106,9 +109,9 @@ void RIT_IRQHandler (void)
 			J_right++;
 			switch(J_right){
 				case 1:
-					disable_timer(0);
+					// disable_timer(0);
 					moveRight();
-					enable_timer(0);
+					// enable_timer(0);
 					break;
 				default:
 					break;
@@ -174,6 +177,8 @@ void RIT_IRQHandler (void)
 			}
 		}
 	}
+	
+	music_update();
 
 	reset_RIT();
   LPC_RIT->RICTRL |= 0x1;	/* clear interrupt flag */

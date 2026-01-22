@@ -15,10 +15,55 @@ uint16_t high_score = 0;
 uint16_t lines = 0;
 
 uint8_t volatile firstSpawn;
+uint16_t lines_for_powerup = 0;
+uint16_t lines_for_malus = 0;
+volatile uint8_t slow_mode;
 
 GameState state;
 Tetromino currentTetromino;
 
+#define NOTE_E5  843  
+#define NOTE_B4  1124
+#define NOTE_C5  1062 
+#define NOTE_D5  946  
+#define NOTE_A4  1262 
+#define NOTE_P   0    
+#define MELODY_LENGTH 20
+
+int melody_notes[] = {NOTE_E5, NOTE_B4, NOTE_C5, NOTE_D5, NOTE_C5, NOTE_B4, NOTE_A4, NOTE_A4, NOTE_C5, NOTE_E5, NOTE_D5, NOTE_C5, NOTE_B4, NOTE_B4, NOTE_C5, NOTE_D5, NOTE_E5, NOTE_C5, NOTE_A4, NOTE_A4};
+int melody_durations[] = {10, 5, 5, 10, 5, 5, 10, 5, 5, 10, 5, 5, 15, 5, 5, 10, 10, 10, 10, 10};
+
+volatile int current_note = 0;
+volatile int note_time_counter = 0;
+
+	// AI; questa funzione viene chiamata in IRQ_RIT
+void music_update() {
+    if(state != PLAYING) {
+        disable_timer(2);
+        return;
+    }
+
+    if(note_time_counter <= 0) {
+        current_note++;
+        if(current_note >= MELODY_LENGTH) current_note = 0;
+        
+        
+        note_time_counter = melody_durations[current_note];
+        
+        
+        int k = melody_notes[current_note];
+        if(k == 0) {
+            disable_timer(2);
+        } else {
+            reset_timer(2);
+            LPC_TIM2->MR0 = k;
+            enable_timer(2);
+        }
+    } else {
+        note_time_counter--;
+    }
+}
+	
 // array che contiene i le informazioni dei tetromino
 const Tetromino tetroShapes[7] = {
 	// I (Asta) - Cyan
@@ -81,6 +126,10 @@ void Tetris_Init(){
 	firstSpawn = 1;
 	current_score = 0;
 	lines = 0;
+	lines_for_powerup = 0;
+  lines_for_malus = 0;
+	slow_mode = 0;
+	reset_timer(0);
 	
 	int i, j;
 	for(i=0; i<ROWS; i++) {
@@ -160,7 +209,7 @@ void printPoints(){
 // funzione chiamata da timer0 che fa scendere il tetromino
 void updateField(int newX, int newY, int newRot){
 	
-	// controllo se la mossa/discesa ? possibile
+	// controllo se la mossa/discesa è possibile
 	if (checkCollision(newX, newY, newRot)){
 		
 		// checkCollision ha ritornato 1, quindi devo fermare il pezzo alla posizione corrente
@@ -248,48 +297,162 @@ void placeTetromino(int newX, int newY, int newRot){
 
 // controlla se una o più linee sono piene e, nel caso, le cancella
 void checkLines(){
-	int numLines = 0;
-	int i, j, m, n;
-	
-	for(i = ROWS - 1; i >= 0; i--){
-		
-		for(j = 0; j < COLS; j++){
-			
-			if (game_field[i][j] != 0){
-				continue;
-			}else 
-				break;
+    int i, j, m, n;
+    int trigger_half = 0;
+    int trigger_row = -1; 
+    int trigger_slow = 0;
+    int numLines = 0;
+    int half_cleared_executed = 0; 
 
-		}
-		if (j >= COLS){
-			numLines++;
-			//deleteLine(i);
-			for (m = i; m > 0; m--)
-				for (n = 0; n < COLS; n++)
-						game_field[m][n] = game_field[m-1][n];
-			
-			for (m = 0; m < COLS; m++)
-				game_field[0][m] = 0;
-			
-			i++; // serve per controllare se ci sono pi? linee da cancellare
-		}
-	}
-	
-	if (numLines > 0){
+    // per velocizzare la pulizia
+    static uint16_t previous_game_field[ROWS][COLS];
+    for(i = 0; i < ROWS; i++) {
+        for(j = 0; j < COLS; j++) {
+            previous_game_field[i][j] = game_field[i][j];
+        }
+    }
+
+    // ricerca powerup
+    for(i = ROWS - 1; i >= 0; i--){
+        int full = 1;
+        for(j = 0; j < COLS; j++){
+            if (game_field[i][j] == 0){
+                full = 0; 
+                break;
+            }
+        }
+        if (full) {
+            for(j = 0; j < COLS; j++){
+                if (game_field[i][j] == PWR_HALF) {
+                    trigger_half = 1;
+                    trigger_row = i; // riga che contiene il powerup
+                }
+                if (game_field[i][j] == PWR_SLOW) {
+                    trigger_slow = 1;
+                }
+            }
+        }
+    }
+   
 		
-		lines += numLines;
+    if (trigger_slow) {
+        slow_mode = 1;
+        reset_timer(1); 
+        enable_timer(1); 
+    }
+    
 		
-		current_score += (numLines == 4) ? 600 : 100 * numLines;
-		
-		for (i = ROWS-1; i >= 0; i--) {
-			for (j = COLS-1; j >= 0; j--) {
-					int lcdX = OFFSET_X + (j * BLK_SIZE);
-					int lcdY = OFFSET_Y + (i * BLK_SIZE);
-					drawBlock(lcdX, lcdY, game_field[i][j]);
-				
-			}
-		}
-	}
+    if (trigger_half && trigger_row != -1) {
+        half_cleared_executed = 1; 
+        
+        // numero linee inferiori
+        int lines_bottom = (ROWS - 1) - trigger_row;
+        int lines_to_remove_bottom = lines_bottom >> 1;
+        
+        // 1 per quella contenente il powerup
+        int total_removed = 1 + lines_to_remove_bottom;
+        
+				// spostamento righe verso il basso
+        int dest_row;
+        for(dest_row = trigger_row + lines_to_remove_bottom; dest_row >= total_removed; dest_row--) {
+             for(n = 0; n < COLS; n++) {
+                 game_field[dest_row][n] = game_field[dest_row - total_removed][n];
+             }
+        }
+        
+        // pulizia righe in alto
+        for(m = 0; m < total_removed; m++) {
+            for(n = 0; n < COLS; n++) {
+                game_field[m][n] = 0;
+            }
+        }
+        
+        
+        lines += total_removed;
+        int if_tetris = total_removed / 4;
+        int remaining = total_removed % 4;
+        
+        current_score += (if_tetris * 600);
+        if (remaining > 0) {
+            current_score += (remaining * 100); 
+        }
+        
+        // spwan powerup
+        lines_for_powerup += total_removed;
+        while(lines_for_powerup >= 5) {
+            spawnPowerup();
+            lines_for_powerup -= 5;
+        }
+
+        // spawn malus
+        lines_for_malus += total_removed;
+        while(lines_for_malus >= 10) {
+            applyMalus();
+            lines_for_malus -= 10;
+            if(state == GAME_OVER) return;
+        }
+    }
+    
+    // pulizia normale della linea
+    if (!half_cleared_executed) {
+        for(i = ROWS - 1; i >= 0; i--){
+            int full = 1;
+            for(j = 0; j < COLS; j++){
+                if (game_field[i][j] == 0) {
+                    full = 0;
+                    break;
+                }
+            }
+            
+            if (full){ 
+                numLines++;
+                for (m = i; m > 0; m--)
+                    for (n = 0; n < COLS; n++)
+                            game_field[m][n] = game_field[m-1][n];
+                
+                for (m = 0; m < COLS; m++)
+                    game_field[0][m] = 0;
+                
+                i++; // per controllare la nuova riga in posizione i
+            }
+        }
+        
+        if (numLines > 0){
+            lines += numLines;
+            current_score += (numLines == 4) ? 600 : 100 * numLines;
+            
+            lines_for_powerup += numLines;
+            while (lines_for_powerup >= 5){
+                spawnPowerup();
+                lines_for_powerup -= 5;
+            }
+
+            lines_for_malus += numLines;
+            while(lines_for_malus >= 10) {
+                applyMalus();
+                lines_for_malus -= 10;
+                if(state == GAME_OVER) return;
+            }
+        }
+    }
+    
+    // aggiornamento griglia
+    if (numLines > 0 || half_cleared_executed) {
+        for (i = 0; i < ROWS; i++) {
+            for (j = 0; j < COLS; j++) {
+                if (game_field[i][j] != previous_game_field[i][j]) {
+                    int screen_x = OFFSET_X + (j * BLK_SIZE);
+                    int screen_y = OFFSET_Y + (i * BLK_SIZE);
+                    
+                    if (game_field[i][j] == 0) 
+                        drawBlock(screen_x, screen_y, Black); 
+                    else 
+                        drawBlock(screen_x, screen_y, game_field[i][j]);
+                }
+            }
+        }
+        printPoints();
+    }
 }
 	
 	
@@ -329,7 +492,7 @@ int spawnTetromino(){
 				sprintf(score_str, "%u", current_score);
         GUI_Text(140, 160, (uint8_t *)score_str, White, Red);
 				
-				for(i = 1250000; i > 0; i--)
+				for(i = 45000000; i > 0; i--)
 					__ASM("nop");
 				
 				return 0;
@@ -453,4 +616,90 @@ void hardDrop() {
 	enable_timer(0);
 				
 } 
+
+
+// spawn dei powerup
+void spawnPowerup(){
+    int count = 0;
+    int i, j;
+
+    // conteggio blocchi validi (se non è vuoto o già powerup)
+    for(i=0; i<ROWS; i++) {
+            for(j=0; j<COLS; j++) {
+                    if(game_field[i][j] != 0 && 
+                         game_field[i][j] != PWR_HALF && 
+                         game_field[i][j] != PWR_SLOW) {
+                            count++;
+                    }
+            }
+    }
+    
+    if (count == 0) return;
+
+    int chosen = rand() % count;
+
+    // ricerca nel campo di quello scelto
+    int current = 0;
+    for(i=0; i<ROWS; i++) {
+            for(j=0; j<COLS; j++) {
+                    if(game_field[i][j] != 0 && 
+                         game_field[i][j] != PWR_HALF && 
+                         game_field[i][j] != PWR_SLOW) {
+                            
+                            if (current == chosen) {
+                                    int type = rand() % 2; 
+                                    uint16_t color = (type == 0) ? PWR_SLOW : PWR_HALF; 
+                                    game_field[i][j] = color;
+                                    return; 
+                            }
+                            current++;
+                    }
+            }
+    }
+}
+
+
+// spawn linea nella riga più bassa del campo
+void applyMalus(){
+	int i, j;
+
+	// controllo gamerover
+	for(j = 0; j < COLS; j++) {
+			if(game_field[0][j] != 0) {
+					state = GAME_OVER;
+					disable_timer(0);
+					
+					if (current_score > high_score)
+							high_score = current_score;
+					
+					uint16_t lateX = OFFSET_X + (BLK_SIZE * COLS) + 3;
+					GUI_Text(lateX, BLK_SIZE * 14, (uint8_t *)"GAME_OVER", White, Black);
+					
+					int k;
+					for(k = 1750000; k > 0; k--) __ASM("nop");
+					
+					return;
+			}
+	}
+
+	// sposto tutto in alto
+	for(i = 0; i < ROWS - 1; i++) {
+			for(j = 0; j < COLS; j++) {
+					game_field[i][j] = game_field[i+1][j];
+			}
+	}
+
+	// pulisco ultima linea per riempirla con il malus
+	for(j = 0; j < COLS; j++) game_field[ROWS-1][j] = 0;
+
+	// riempio 7 blocchi
+	int placed = 0;
+	while(placed < 7) {
+			int pos = rand() % COLS;
+			if(game_field[ROWS-1][pos] == 0) {
+					game_field[ROWS-1][pos] = Red; 
+					placed++;
+			}
+	}
+}
 	

@@ -8,6 +8,10 @@
 #define OFFSET_X 10
 #define OFFSET_Y 10 // offset iniziale per il blocco in caduta
 
+#define PWR_SLOW 0xFFFF // bianco
+#define PWR_HALF 0x4208 // grigio scuro
+
+extern volatile uint8_t slow_mode;
 
 // Enum che indica gli stati del gioco
 typedef enum {
@@ -44,4 +48,5 @@ void moveLeft(void);
 void moveRight(void); 
 void hardDrop(void); 
 
-
+void spawnPowerup(void);
+void applyMalus(void);
