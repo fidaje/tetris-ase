@@ -56,7 +56,7 @@ The final version fully complies with the specifications of both assignments for
 
 ## Extended Features (Extra Point 2)
 
-### 🎚 Variable Speed Control (ADC)
+### 🏎️ Variable Speed Control (ADC)
 - Game speed controlled by the **potentiometer**
   - 1 block/second at 0V
   - Up to 5 blocks/second at maximum voltage
